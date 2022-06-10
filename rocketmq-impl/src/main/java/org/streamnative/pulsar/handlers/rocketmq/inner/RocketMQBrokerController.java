@@ -2,9 +2,9 @@
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
- *
+ * <p>
  * http://www.apache.org/licenses/LICENSE-2.0
- *
+ * <p>
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -17,8 +17,11 @@ package org.streamnative.pulsar.handlers.rocketmq.inner;
 import com.alibaba.fastjson.JSON;
 import com.google.common.cache.Cache;
 import com.google.common.cache.CacheBuilder;
+
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -26,6 +29,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
+
 import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.BooleanUtils;
@@ -70,6 +74,8 @@ import org.streamnative.pulsar.handlers.rocketmq.inner.producer.ClientTopicName;
 import org.streamnative.pulsar.handlers.rocketmq.inner.producer.ProducerManager;
 import org.streamnative.pulsar.handlers.rocketmq.inner.proxy.RopBrokerProxy;
 import org.streamnative.pulsar.handlers.rocketmq.utils.MessageIdUtils;
+
+import static org.streamnative.pulsar.handlers.rocketmq.utils.CommonUtils.*;
 
 /**
  * RocketMQ broker controller.
@@ -129,6 +135,10 @@ public class RocketMQBrokerController {
     private TransactionalMessageCheckService transactionalMessageCheckService;
     private TransactionalMessageService transactionalMessageService;
     private AbstractTransactionalMessageCheckListener transactionalMessageCheckListener;
+
+    private ConcurrentHashMap<String, TransactionState> transactionStore = new ConcurrentHashMap<>();
+
+    private Object transactionStateSignal = new Object();
     private volatile BrokerService brokerService;
     private ScheduleMessageService delayedMessageService;
     private volatile boolean isRunning = false;
@@ -188,8 +198,8 @@ public class RocketMQBrokerController {
         this.getScheduledExecutorService().scheduleAtFixedRate(
                 () -> {
                     log.info("Show current cursor count: {}, addCursorCount: {}, delCursorCount: {}.",
-                            RopServerCnx.ADD_CURSOR_COUNT.get() - RopServerCnx.DEL_CURSOR_COUNT.get(),
-                            RopServerCnx.ADD_CURSOR_COUNT.get(), RopServerCnx.DEL_CURSOR_COUNT.get());
+                             RopServerCnx.ADD_CURSOR_COUNT.get() - RopServerCnx.DEL_CURSOR_COUNT.get(),
+                             RopServerCnx.ADD_CURSOR_COUNT.get(), RopServerCnx.DEL_CURSOR_COUNT.get());
 
                     log.info("Show request count: {}", RopBrokerProxy.REQUEST_COUNT_TABLE);
 
@@ -199,8 +209,8 @@ public class RocketMQBrokerController {
                     log.info("Show send timing message count: {}", RopServerCnx.TIMING_SEND_COUNT.get());
 
                     log.info("Show getQueueOffsetByPosition avg cost: {}ms, count: {}",
-                            MessageIdUtils.GET_QUEUE_OFFSET_BY_POSITION_METER.oneMinuteRate(),
-                            MessageIdUtils.GET_QUEUE_OFFSET_BY_POSITION_METER.count());
+                             MessageIdUtils.GET_QUEUE_OFFSET_BY_POSITION_METER.oneMinuteRate(),
+                             MessageIdUtils.GET_QUEUE_OFFSET_BY_POSITION_METER.count());
                 }, 30, 30, TimeUnit.SECONDS);
     }
 
@@ -290,8 +300,8 @@ public class RocketMQBrokerController {
 
         this.consumerManageExecutor =
                 Executors.newFixedThreadPool(this.serverConfig.getConsumerManageThreadPoolNums(),
-                        new ThreadFactoryImpl(
-                                "ConsumerManageThread_"));
+                                             new ThreadFactoryImpl(
+                                                     "ConsumerManageThread_"));
 
         this.ropBrokerRequestExecutor = new BrokerFixedThreadPoolExecutor(
                 this.serverConfig.getRopBrokerRequestThreadPoolCapacity(),
@@ -367,11 +377,12 @@ public class RocketMQBrokerController {
 
         getRemotingServer().registerRPCHook(new RPCHook() {
             final Cache<Triple<String, String, TopicOperation>, Boolean> authCaches = CacheBuilder.newBuilder()
-                    .expireAfterAccess(3, TimeUnit.MINUTES)
-                    .initialCapacity(1024)
-                    .concurrencyLevel(64)
-                    .maximumSize(4096)
-                    .build();
+                                                                                                  .expireAfterAccess(3,
+                                                                                                                     TimeUnit.MINUTES)
+                                                                                                  .initialCapacity(1024)
+                                                                                                  .concurrencyLevel(64)
+                                                                                                  .maximumSize(4096)
+                                                                                                  .build();
 
             private boolean checkTokens(String token, String topic, TopicOperation authOp) {
                 Triple<String, String, TopicOperation> authTriple = Triple.of(token, topic, authOp);
@@ -383,14 +394,14 @@ public class RocketMQBrokerController {
                         Boolean authOK = false;
                         if (!Strings.EMPTY.equals(roleSubject)) {
                             authOK = brokerService.getAuthorizationService()
-                                    .allowTopicOperationAsync(TopicName.get(topic), authOp,
-                                            roleSubject,
-                                            authCommand).get();
+                                                  .allowTopicOperationAsync(TopicName.get(topic), authOp,
+                                                                            roleSubject,
+                                                                            authCommand).get();
                         }
                         authCaches.put(authTriple, authOK);
                     } catch (Exception e) {
                         log.warn("RoP checkTokens error for [topic={}, token={}], error msg: {}", topic, token,
-                                e.getMessage());
+                                 e.getMessage());
                         authCaches.put(authTriple, false);
                     }
                 }
@@ -411,9 +422,9 @@ public class RocketMQBrokerController {
                 }
 
                 if (RequestCode.SEND_MESSAGE == request.getCode()
-                        || RequestCode.SEND_MESSAGE_V2 == request.getCode()
+                    || RequestCode.SEND_MESSAGE_V2 == request.getCode()
 //                        || RequestCode.CONSUMER_SEND_MSG_BACK == request.getCode()
-                        || RequestCode.SEND_BATCH_MESSAGE == request.getCode()) {
+                    || RequestCode.SEND_BATCH_MESSAGE == request.getCode()) {
 
                     try {
                         SendMessageRequestHeader requestHeader = SendMessageProcessor
@@ -447,11 +458,11 @@ public class RocketMQBrokerController {
                         throw new AclException("Token authentication failed, please check");
                     }
                 } else if (RequestCode.UPDATE_AND_CREATE_TOPIC == request.getCode()
-                        || RequestCode.DELETE_TOPIC_IN_BROKER == request.getCode()
-                        || RequestCode.UPDATE_BROKER_CONFIG == request.getCode()
-                        || RequestCode.UPDATE_AND_CREATE_SUBSCRIPTIONGROUP == request.getCode()
-                        || RequestCode.DELETE_SUBSCRIPTIONGROUP == request.getCode()
-                        || RequestCode.INVOKE_BROKER_TO_RESET_OFFSET == request.getCode()) {
+                           || RequestCode.DELETE_TOPIC_IN_BROKER == request.getCode()
+                           || RequestCode.UPDATE_BROKER_CONFIG == request.getCode()
+                           || RequestCode.UPDATE_AND_CREATE_SUBSCRIPTIONGROUP == request.getCode()
+                           || RequestCode.DELETE_SUBSCRIPTIONGROUP == request.getCode()
+                           || RequestCode.INVOKE_BROKER_TO_RESET_OFFSET == request.getCode()) {
 
                     log.trace("Into admin auth logic and the check is: {}", authToken.equals(token));
                     if (!authToken.equals(token)) {
@@ -494,14 +505,14 @@ public class RocketMQBrokerController {
             this.transactionalMessageService = new TransactionalMessageServiceImpl(
                     new TransactionalMessageBridge(this, null));
             log.warn("Load default transaction message hook service: {}",
-                    TransactionalMessageServiceImpl.class.getSimpleName());
+                     TransactionalMessageServiceImpl.class.getSimpleName());
         }
         this.transactionalMessageCheckListener = ServiceProvider
                 .loadClass(ServiceProvider.TRANSACTION_LISTENER_ID, AbstractTransactionalMessageCheckListener.class);
         if (null == this.transactionalMessageCheckListener) {
             this.transactionalMessageCheckListener = new DefaultTransactionalMessageCheckListener();
             log.warn("Load default discard message hook service: {}",
-                    DefaultTransactionalMessageCheckListener.class.getSimpleName());
+                     DefaultTransactionalMessageCheckListener.class.getSimpleName());
         }
         this.transactionalMessageCheckListener.setBrokerController(this);
         this.transactionalMessageCheckService = new TransactionalMessageCheckService(this);
@@ -544,13 +555,13 @@ public class RocketMQBrokerController {
 
     public void printWaterMark() {
         log.info("[WATERMARK] Send Queue Size: {} SlowTimeMills: {}", this.sendThreadPoolQueue.size(),
-                headSlowTimeMills4SendThreadPoolQueue());
+                 headSlowTimeMills4SendThreadPoolQueue());
         log.info("[WATERMARK] Pull Queue Size: {} SlowTimeMills: {}", this.pullThreadPoolQueue.size(),
-                headSlowTimeMills4PullThreadPoolQueue());
+                 headSlowTimeMills4PullThreadPoolQueue());
         log.info("[WATERMARK] Query Queue Size: {} SlowTimeMills: {}", this.queryThreadPoolQueue.size(),
-                headSlowTimeMills4QueryThreadPoolQueue());
+                 headSlowTimeMills4QueryThreadPoolQueue());
         log.info("[WATERMARK] Transaction Queue Size: {} SlowTimeMills: {}",
-                this.endTransactionThreadPoolQueue.size(), headSlowTimeMills4EndTransactionThreadPoolQueue());
+                 this.endTransactionThreadPoolQueue.size(), headSlowTimeMills4EndTransactionThreadPoolQueue());
     }
 
     public void shutdown() {
@@ -635,8 +646,8 @@ public class RocketMQBrokerController {
     public void start() throws Exception {
         this.brokerHost = brokerService.pulsar().getAdvertisedAddress();
         this.brokerAddress = brokerService.pulsar().getAdvertisedAddress()
-                + ":"
-                + RocketMQProtocolHandler.getListenerPort(serverConfig.getRocketmqListeners());
+                             + ":"
+                             + RocketMQProtocolHandler.getListenerPort(serverConfig.getRocketmqListeners());
 
         if (this.groupMetaManager != null) {
             this.groupMetaManager.start();
@@ -676,4 +687,63 @@ public class RocketMQBrokerController {
         return this.ropBrokerProxy.getMqTopicManager();
     }
 
+    public void setTransactionState(String msgId, String state) {
+        TransactionState ts = new TransactionState(state);
+        transactionStore.put(msgId, ts);
+        if (state.equals(ROP_TRANSACTION_STATE_COMMIT) || state.equals(ROP_TRANSACTION_STATE_ROLLBACK)) {
+            synchronized (transactionStateSignal) {
+                transactionStateSignal.notifyAll();
+            }
+        }
+    }
+    public TransactionState getTransactionState(String msgId) {
+        return transactionStore.get(msgId);
+    }
+
+    public void cleanTransactionState(String msgId) {
+        transactionStore.remove(msgId);
+    }
+
+    public Object getTransactionStateSignal() {
+        return transactionStateSignal;
+    }
+
+    public static class TransactionState {
+        private String state;
+        private long lastAccessTime;
+
+        public TransactionState(String state) {
+            this.state = state;
+            this.lastAccessTime = System.currentTimeMillis();
+        }
+
+        public String getState() {
+            return state;
+        }
+
+        public long getLastAccessTime() {
+            return lastAccessTime;
+        }
+
+        public void setLastAccessTime(long lastAccessTime) {
+            this.lastAccessTime = lastAccessTime;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) {
+                return true;
+            }
+            if (o == null || getClass() != o.getClass()) {
+                return false;
+            }
+            TransactionState that = (TransactionState) o;
+            return lastAccessTime == that.lastAccessTime && Objects.equals(state, that.state);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(state, lastAccessTime);
+        }
+    }
 }

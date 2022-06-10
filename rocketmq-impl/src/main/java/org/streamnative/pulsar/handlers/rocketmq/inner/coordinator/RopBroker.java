@@ -15,6 +15,9 @@
 package org.streamnative.pulsar.handlers.rocketmq.inner.coordinator;
 
 import lombok.extern.slf4j.Slf4j;
+import org.apache.pulsar.broker.PulsarService;
+import org.apache.pulsar.metadata.api.extended.MetadataStoreExtended;
+import org.apache.pulsar.metadata.impl.ZKMetadataStore;
 import org.apache.zookeeper.ZooKeeper;
 import org.streamnative.pulsar.handlers.rocketmq.inner.RocketMQBrokerController;
 import org.streamnative.pulsar.handlers.rocketmq.inner.zookeeper.RopZkUtils;
@@ -36,7 +39,7 @@ public class RopBroker {
 
     public void start() {
         log.info("Start RopBroker");
-        this.zkClient = brokerController.getBrokerService().pulsar().getZkClient();
+        this.zkClient = getZkClient();
         this.zkNodePath = RopZkUtils.BROKERS_PATH + "/" + brokerController.getBrokerAddress();
         ZookeeperUtils.createEphemeralNodeIfNotExist(zkClient, zkNodePath);
     }
@@ -47,6 +50,16 @@ public class RopBroker {
             ZookeeperUtils.deleteData(zkClient, zkNodePath);
         } catch (Throwable t) {
             log.error("Delete rop broker zk node error", t);
+        }
+    }
+
+    private ZooKeeper getZkClient() {
+        PulsarService pulsar = brokerController.getBrokerService().pulsar();
+        MetadataStoreExtended localMetadataStore = pulsar.getLocalMetadataStore();
+        if (localMetadataStore instanceof ZKMetadataStore) {
+            return ((ZKMetadataStore) localMetadataStore).getZkClient();
+        } else {
+            throw new RuntimeException("MetadataStore implemenation is not based on ZooKeeper");
         }
     }
 }

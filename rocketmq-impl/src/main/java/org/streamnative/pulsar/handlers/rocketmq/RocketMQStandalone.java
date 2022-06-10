@@ -323,7 +323,7 @@ public class RocketMQStandalone implements AutoCloseable {
         broker.start();
 
         if (config.isTransactionCoordinatorEnabled()) {
-            broker.getTransactionMetadataStoreService().addTransactionMetadataStore(TransactionCoordinatorID.get(0));
+            broker.getTransactionMetadataStoreService().start();
         }
 
         if (!config.isTlsEnabled()) {

@@ -14,6 +14,7 @@
 
 package org.streamnative.pulsar.handlers.rocketmq.inner.processor;
 
+import static org.apache.rocketmq.common.message.MessageConst.*;
 import static org.streamnative.pulsar.handlers.rocketmq.utils.CommonUtils.ROP_INNER_CLIENT_ADDRESS;
 import static org.streamnative.pulsar.handlers.rocketmq.utils.CommonUtils.ROP_INNER_MESSAGE_ID;
 import static org.streamnative.pulsar.handlers.rocketmq.utils.CommonUtils.ROP_OWNER_COST_TIME;
@@ -33,6 +34,7 @@ import org.apache.pulsar.common.util.SimpleTextOutputStream;
 import org.apache.rocketmq.broker.mqtrace.ConsumeMessageContext;
 import org.apache.rocketmq.broker.mqtrace.ConsumeMessageHook;
 import org.apache.rocketmq.broker.mqtrace.SendMessageContext;
+import org.apache.rocketmq.client.producer.LocalTransactionState;
 import org.apache.rocketmq.common.MQVersion;
 import org.apache.rocketmq.common.MixAll;
 import org.apache.rocketmq.common.TopicConfig;
@@ -407,33 +409,31 @@ public class SendMessageProcessor extends AbstractSendMessageProcessor implement
         if (Boolean.parseBoolean(traFlag)
                 && !(msgInner.getReconsumeTimes() > 0
                 && msgInner.getDelayTimeLevel() > 0)) { //For client under version 4.6.1
-            putMessageResult = new org.apache.rocketmq.store.PutMessageResult(PutMessageStatus.MESSAGE_ILLEGAL, null);
-            return handlePutMessageResult(putMessageResult, response, request, msgInner, responseHeader,
-                    sendMessageContext, queueIdInt);
-        } else {
-            try {
-                if (traceContext != null) {
-                    traceContext.setPersistStartTime(System.currentTimeMillis());
-                }
-                this.getServerCnxMsgStore(ctx,
-                                CommonUtils.getInnerProducerGroupName(request, requestHeader.getProducerGroup()))
-                        .putMessage(CommonUtils.getPulsarPartitionIdByRequest(request),
-                                msgInner,
-                                requestHeader.getProducerGroup(),
-                                new SendMessageCallback(response, request, msgInner, responseHeader,
-                                        sendMessageContext, ctx, queueIdInt, traceContext));
-                return null;
-            } catch (RopPersistentTopicException e) {
-                log.warn("[{}] sendMessage failed, for Owned Topic isn't on this broker.", requestHeader.getTopic());
-                response.setCode(ResponseCode.SYSTEM_ERROR);
-                response.setRemark("NotFoundTopic");
-                return response;
-            } catch (Exception e) {
-                log.warn("[{}] sendMessage failed", requestHeader.getTopic(), e);
-                response.setCode(ResponseCode.SYSTEM_ERROR);
-                response.setRemark(e.getMessage());
-                return response;
+            String msgId = msgInner.getProperties().get(PROPERTY_UNIQ_CLIENT_MESSAGE_ID_KEYIDX);
+            this.brokerController.setTransactionState(msgId, CommonUtils.ROP_TRANSACTION_STATE_UNKNOW);
+        }
+        try {
+            if (traceContext != null) {
+                traceContext.setPersistStartTime(System.currentTimeMillis());
             }
+            this.getServerCnxMsgStore(ctx,
+                                      CommonUtils.getInnerProducerGroupName(request, requestHeader.getProducerGroup()))
+                .putMessage(CommonUtils.getPulsarPartitionIdByRequest(request),
+                            msgInner,
+                            requestHeader.getProducerGroup(),
+                            new SendMessageCallback(response, request, msgInner, responseHeader,
+                                                    sendMessageContext, ctx, queueIdInt, traceContext));
+            return null;
+        } catch (RopPersistentTopicException e) {
+            log.warn("[{}] sendMessage failed, for Owned Topic isn't on this broker.", requestHeader.getTopic());
+            response.setCode(ResponseCode.SYSTEM_ERROR);
+            response.setRemark("NotFoundTopic");
+            return response;
+        } catch (Exception e) {
+            log.warn("[{}] sendMessage failed", requestHeader.getTopic(), e);
+            response.setCode(ResponseCode.SYSTEM_ERROR);
+            response.setRemark(e.getMessage());
+            return response;
         }
     }
 

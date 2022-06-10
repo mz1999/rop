@@ -15,7 +15,7 @@
 package org.streamnative.pulsar.handlers.rocketmq.inner.format;
 
 import static org.apache.pulsar.common.protocol.Commands.hasChecksum;
-import static org.streamnative.pulsar.handlers.rocketmq.utils.CommonUtils.ROP_MESSAGE_ID;
+import static org.streamnative.pulsar.handlers.rocketmq.utils.CommonUtils.*;
 
 import com.google.common.base.Preconditions;
 import com.scurrilous.circe.checksum.Crc32cIntChecksum;
@@ -101,12 +101,12 @@ public class RopEntryFormatter implements EntryFormatter<MessageExt> {
         return convertRocketmq2Pulsar(record, traceEnable);
     }
 
-    public ByteBuf encode(byte[] record, String msgId) {
+    public ByteBuf encode(byte[] record, String msgId, String transactionState) {
         final ByteBuf recordsWrapper = Unpooled.wrappedBuffer(record);
         try {
             return Commands.serializeMetadataAndPayload(
                     Commands.ChecksumType.None,
-                    getDefaultMessageMetadata(msgId),
+                    getDefaultMessageMetadata(msgId, transactionState),
                     recordsWrapper);
         } finally {
             recordsWrapper.release();
@@ -114,12 +114,13 @@ public class RopEntryFormatter implements EntryFormatter<MessageExt> {
     }
 
 
-    private static MessageMetadata getDefaultMessageMetadata(String msgId) {
+    private static MessageMetadata getDefaultMessageMetadata(String msgId, String transactionState) {
         final MessageMetadata messageMetadata = new MessageMetadata();
         messageMetadata.setProducerName("");
         messageMetadata.setSequenceId(0L);
         messageMetadata.setPublishTime(System.currentTimeMillis());
         messageMetadata.addProperty().setKey(ROP_MESSAGE_ID).setValue(msgId);
+        messageMetadata.addProperty().setKey(ROP_TRANSACTION_STATE_TAG).setValue(transactionState);
         return messageMetadata;
     }
 

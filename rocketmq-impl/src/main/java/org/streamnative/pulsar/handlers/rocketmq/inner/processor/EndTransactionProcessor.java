@@ -33,6 +33,7 @@ import org.apache.rocketmq.remoting.netty.NettyRequestProcessor;
 import org.apache.rocketmq.remoting.protocol.RemotingCommand;
 import org.apache.rocketmq.store.MessageExtBrokerInner;
 import org.streamnative.pulsar.handlers.rocketmq.inner.RocketMQBrokerController;
+import org.streamnative.pulsar.handlers.rocketmq.utils.CommonUtils;
 
 /**
  * End transaction processor.
@@ -115,36 +116,11 @@ public class EndTransactionProcessor implements NettyRequestProcessor {
         }
         OperationResult result = new OperationResult();
         if (MessageSysFlag.TRANSACTION_COMMIT_TYPE == requestHeader.getCommitOrRollback()) {
-            result = this.brokerController.getTransactionalMessageService().commitMessage(requestHeader);
-            if (result.getResponseCode() == ResponseCode.SUCCESS) {
-                RemotingCommand res = checkPrepareMessage(result.getPrepareMessage(), requestHeader);
-                if (res.getCode() == ResponseCode.SUCCESS) {
-                    MessageExtBrokerInner msgInner = endMessageTransaction(result.getPrepareMessage());
-                    msgInner.setSysFlag(MessageSysFlag
-                            .resetTransactionValue(msgInner.getSysFlag(), requestHeader.getCommitOrRollback()));
-                    msgInner.setQueueOffset(requestHeader.getTranStateTableOffset());
-                    msgInner.setPreparedTransactionOffset(requestHeader.getCommitLogOffset());
-                    msgInner.setStoreTimestamp(result.getPrepareMessage().getStoreTimestamp());
-                    MessageAccessor.clearProperty(msgInner, MessageConst.PROPERTY_TRANSACTION_PREPARED);
-                    RemotingCommand sendResult = sendFinalMessage(msgInner);
-                    if (sendResult.getCode() == ResponseCode.SUCCESS) {
-                        this.brokerController.getTransactionalMessageService()
-                                .deletePrepareMessage(result.getPrepareMessage());
-                    }
-                    return sendResult;
-                }
-                return res;
-            }
+            this.brokerController.setTransactionState(requestHeader.getMsgId(), CommonUtils.ROP_TRANSACTION_STATE_COMMIT);
+            result.setResponseCode(ResponseCode.SUCCESS);
         } else if (MessageSysFlag.TRANSACTION_ROLLBACK_TYPE == requestHeader.getCommitOrRollback()) {
-            result = this.brokerController.getTransactionalMessageService().rollbackMessage(requestHeader);
-            if (result.getResponseCode() == ResponseCode.SUCCESS) {
-                RemotingCommand res = checkPrepareMessage(result.getPrepareMessage(), requestHeader);
-                if (res.getCode() == ResponseCode.SUCCESS) {
-                    this.brokerController.getTransactionalMessageService()
-                            .deletePrepareMessage(result.getPrepareMessage());
-                }
-                return res;
-            }
+            this.brokerController.setTransactionState(requestHeader.getMsgId(), CommonUtils.ROP_TRANSACTION_STATE_ROLLBACK);
+            result.setResponseCode(ResponseCode.SUCCESS);
         }
         response.setCode(result.getResponseCode());
         response.setRemark(result.getResponseRemark());

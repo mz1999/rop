@@ -17,8 +17,7 @@ package org.streamnative.pulsar.handlers.rocketmq.inner;
 import static org.apache.rocketmq.common.message.MessageConst.PROPERTY_KEYS;
 import static org.apache.rocketmq.common.message.MessageConst.PROPERTY_TAGS;
 import static org.apache.rocketmq.common.message.MessageConst.PROPERTY_UNIQ_CLIENT_MESSAGE_ID_KEYIDX;
-import static org.streamnative.pulsar.handlers.rocketmq.utils.CommonUtils.ROP_MESSAGE_ID;
-import static org.streamnative.pulsar.handlers.rocketmq.utils.CommonUtils.SLASH_CHAR;
+import static org.streamnative.pulsar.handlers.rocketmq.utils.CommonUtils.*;
 
 import com.google.common.base.Function;
 import com.google.common.base.Joiner;
@@ -48,6 +47,7 @@ import org.apache.bookkeeper.mledger.ManagedLedgerException;
 import org.apache.bookkeeper.mledger.impl.NonDurableCursorImpl;
 import org.apache.bookkeeper.mledger.impl.PositionImpl;
 import org.apache.commons.lang.exception.ExceptionUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.math.NumberUtils;
 import org.apache.commons.lang3.tuple.ImmutablePair;
 import org.apache.commons.lang3.tuple.Triple;
@@ -60,7 +60,10 @@ import org.apache.pulsar.client.api.PulsarClientException;
 import org.apache.pulsar.client.api.Reader;
 import org.apache.pulsar.client.impl.ClientCnx;
 import org.apache.pulsar.client.impl.MessageIdImpl;
+import org.apache.pulsar.common.api.proto.KeyValue;
+import org.apache.pulsar.common.api.proto.MessageMetadata;
 import org.apache.pulsar.common.naming.TopicName;
+import org.apache.pulsar.common.protocol.Commands;
 import org.apache.pulsar.common.util.FutureUtil;
 import org.apache.pulsar.common.util.collections.ConcurrentLongHashMap;
 import org.apache.rocketmq.common.MixAll;
@@ -81,6 +84,7 @@ import org.apache.rocketmq.store.GetMessageStatus;
 import org.apache.rocketmq.store.MessageExtBrokerInner;
 import org.apache.rocketmq.store.PutMessageStatus;
 import org.streamnative.pulsar.handlers.rocketmq.RocketMQProtocolHandler;
+import org.streamnative.pulsar.handlers.rocketmq.inner.RocketMQBrokerController.TransactionState;
 import org.streamnative.pulsar.handlers.rocketmq.inner.consumer.CommitLogOffset;
 import org.streamnative.pulsar.handlers.rocketmq.inner.consumer.RopGetMessageResult;
 import org.streamnative.pulsar.handlers.rocketmq.inner.exception.RopEncodeException;
@@ -513,7 +517,12 @@ public class RopServerCnx extends ChannelInboundHandlerAdapter implements Pulsar
             String pTopic, int partition) {
         ByteBuf headersAndPayload = null;
         try {
-            headersAndPayload = this.entryFormatter.encode(ropMessage.getMsgBody(), ropMessage.getMsgId());
+            String state = CommonUtils.ROP_TRANSACTION_STATE_COMMIT;
+            TransactionState ts = this.brokerController.getTransactionState(ropMessage.getMsgId());
+            if (ts != null) {
+                state = ts.getState();
+            }
+            headersAndPayload = this.entryFormatter.encode(ropMessage.getMsgBody(), ropMessage.getMsgId(), state);
 
             // collect metrics
             org.apache.pulsar.broker.service.Producer producer = this.brokerController.getTopicConfigManager()
@@ -648,6 +657,7 @@ public class RopServerCnx extends ChannelInboundHandlerAdapter implements Pulsar
         String consumerGroupName = requestHeader.getConsumerGroup();
         String topicName = requestHeader.getTopic();
         long queueOffset = requestHeader.getQueueOffset();
+        long originalOffset = queueOffset;
 
         // hang pull request if this broker not owner for the request partitionId topicName
         RocketMQTopic rmqTopic = new RocketMQTopic(topicName);
@@ -727,9 +737,16 @@ public class RopServerCnx extends ChannelInboundHandlerAdapter implements Pulsar
             managedCursor = getOrCreateCursor(triple, managedLedger, startPosition);
         }
 
+
         if (managedCursor != null) {
             try {
                 List<Entry> entries = managedCursor.readEntries(maxMsgNums);
+                while (hasHalfStateMessage(entries)) {
+                    Object signal = this.brokerController.getTransactionStateSignal();
+                    synchronized (signal) {
+                        signal.wait();
+                    }
+                }
 
                 // commit the offset, so backlog not affect by this cursor.
                 if (!entries.isEmpty()) {
@@ -741,6 +758,10 @@ public class RopServerCnx extends ChannelInboundHandlerAdapter implements Pulsar
 
                 for (Entry entry : entries) {
                     if (entry == null) {
+                        continue;
+                    }
+                    //drop the rollback msg
+                    if (isRollbackMsg(entry.getDataBuffer())) {
                         continue;
                     }
                     try {
@@ -777,6 +798,89 @@ public class RopServerCnx extends ChannelInboundHandlerAdapter implements Pulsar
         getResult.setNextBeginOffset(nextBeginOffset);
         nextBeginOffsets.put(readerId, nextBeginOffset);
         return getResult;
+    }
+
+    private boolean isRollbackMsg(ByteBuf headersAndPayload) {
+        MessageMetadata messageMetadata = peekMessageMetadata(headersAndPayload);
+        String msgId = "";
+        String persistentState = ROP_TRANSACTION_STATE_COMMIT;
+        for (KeyValue keyValue : messageMetadata.getPropertiesList()) {
+            if (keyValue.getKey().equals(ROP_MESSAGE_ID)) {
+                msgId = keyValue.getValue();
+            }
+            if (keyValue.getKey().equals(ROP_TRANSACTION_STATE_TAG)) {
+                persistentState = keyValue.getValue();
+            }
+        }
+        if ( persistentState.equals(ROP_TRANSACTION_STATE_COMMIT)) {
+            return false;
+        }
+
+        TransactionState realState = this.brokerController.getTransactionState(msgId);
+        if (realState == null) {
+            return false;
+        }
+        if (realState.getState().equals(ROP_TRANSACTION_STATE_ROLLBACK)) {
+            log.info("drop the rollback msg, msgId:[{}]", msgId);
+            this.brokerController.cleanTransactionState(msgId);
+            return true;
+        } else if (realState.getState().equals(ROP_TRANSACTION_STATE_COMMIT)) {
+            this.brokerController.cleanTransactionState(msgId);
+            return false;
+        }
+        return false;
+    }
+
+    private boolean hasHalfStateMessage(List<Entry> entries) {
+        if (entries.isEmpty()) {
+            return false;
+        }
+        for (Entry entry : entries) {
+            MessageMetadata messageMetadata = peekMessageMetadata(entry.getDataBuffer());
+            String persistentState = ROP_TRANSACTION_STATE_COMMIT;
+            String msgId = "";
+            for (KeyValue keyValue : messageMetadata.getPropertiesList()) {
+                if (keyValue.getKey().equals(ROP_TRANSACTION_STATE_TAG)) {
+                    persistentState = keyValue.getValue();
+                }
+                if (keyValue.getKey().equals(ROP_MESSAGE_ID)) {
+                    msgId = keyValue.getValue();
+                }
+            }
+            if (StringUtils.isEmpty(msgId)) {
+                continue;
+            }
+            if (persistentState.equals(ROP_TRANSACTION_STATE_COMMIT)) {
+                continue;
+            }
+
+            TransactionState realState = this.brokerController.getTransactionState(msgId);
+            if (realState == null) {
+                if (persistentState.equals(ROP_TRANSACTION_STATE_UNKNOW)) {
+                    // Todo: send check msg to client
+                    this.brokerController.setTransactionState(msgId, ROP_TRANSACTION_STATE_UNKNOW);
+                    return true;
+                }
+            } else {
+                if (realState.getState().equals(ROP_TRANSACTION_STATE_UNKNOW)) {
+                    log.info("RoP pulsar entry has hasHalfStateMessage , msgId: [{}]", msgId);
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static MessageMetadata peekMessageMetadata(ByteBuf metadataAndPayload) {
+        try {
+            int readerIdx = metadataAndPayload.readerIndex();
+            MessageMetadata metadata = Commands.parseMessageMetadata(metadataAndPayload);
+            metadataAndPayload.readerIndex(readerIdx);
+            return metadata;
+        } catch (Throwable t) {
+            log.error("Failed to parse message metadata", t);
+            return null;
+        }
     }
 
     private ManagedCursor getOrCreateCursor(Triple<Long, String, String> triple, ManagedLedger managedLedger,

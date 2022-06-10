@@ -14,7 +14,7 @@
 
 package org.streamnative.pulsar.handlers.rocketmq.inner.namesvr;
 
-import static org.apache.pulsar.broker.web.PulsarWebResource.joinPath;
+import static org.apache.pulsar.common.policies.path.PolicyPath.joinPath;
 
 import com.google.common.base.Function;
 import com.google.common.base.Joiner;

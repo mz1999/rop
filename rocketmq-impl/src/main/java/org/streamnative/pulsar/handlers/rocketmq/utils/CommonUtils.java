@@ -68,6 +68,14 @@ public class CommonUtils {
     public static final int ROP_CACHE_MAX_SIZE = 1024 << 8;
     public static final int ROP_CACHE_EXPIRE_TIME_MS = 360 * 1000;
 
+    public static final String ROP_TRANSACTION_STATE_TAG = "r_t_s";
+
+    public static final String ROP_TRANSACTION_STATE_UNKNOW = "0";
+
+    public static final String ROP_TRANSACTION_STATE_COMMIT = "1";
+
+    public static final String ROP_TRANSACTION_STATE_ROLLBACK = "2";
+
     /**
      * @param pulsarTopicName => [tenant/ns/topicName]
      * @return rmqTopicName => [tenant|ns%topicName]

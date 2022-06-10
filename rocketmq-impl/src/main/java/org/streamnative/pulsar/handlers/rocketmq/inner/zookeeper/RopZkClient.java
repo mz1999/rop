@@ -16,6 +16,9 @@ package org.streamnative.pulsar.handlers.rocketmq.inner.zookeeper;
 
 import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.pulsar.broker.PulsarService;
+import org.apache.pulsar.metadata.api.extended.MetadataStoreExtended;
+import org.apache.pulsar.metadata.impl.ZKMetadataStore;
 import org.apache.zookeeper.WatchedEvent;
 import org.apache.zookeeper.Watcher;
 import org.apache.zookeeper.ZooKeeper;
@@ -37,7 +40,7 @@ public class RopZkClient implements Watcher {
     }
 
     public void start() {
-        this.zooKeeper = brokerController.getBrokerService().pulsar().getZkClient();
+        this.zooKeeper = getZkClient();
 
         // init rop zk node
         ZookeeperUtils.createPersistentNodeIfNotExist(zooKeeper, RopZkUtils.ROP_PATH);
@@ -55,5 +58,15 @@ public class RopZkClient implements Watcher {
     @Override
     public void process(WatchedEvent event) {
 
+    }
+
+    private ZooKeeper getZkClient() {
+        PulsarService pulsar = brokerController.getBrokerService().pulsar();
+        MetadataStoreExtended localMetadataStore = pulsar.getLocalMetadataStore();
+        if (localMetadataStore instanceof ZKMetadataStore) {
+            return ((ZKMetadataStore) localMetadataStore).getZkClient();
+        } else {
+            throw new RuntimeException("MetadataStore implemenation is not based on ZooKeeper");
+        }
     }
 }

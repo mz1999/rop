@@ -62,6 +62,7 @@ public class RopCoordinator implements AutoCloseable {
 //        elect();
     }
 
+    /*
     private void elect() {
         try {
             byte[] data = pulsar.getLocalZkCache().getZooKeeper().getData(RopZkUtils.COORDINATOR_PATH, event -> {
@@ -129,6 +130,7 @@ public class RopCoordinator implements AutoCloseable {
             pulsar.getShutdownService().shutdown(-1);
         }
     }
+     */
 
     /**
      * broker become coordinator.
