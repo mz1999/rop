@@ -744,7 +744,7 @@ public class RopServerCnx extends ChannelInboundHandlerAdapter implements Pulsar
                 while (hasHalfStateMessage(entries)) {
                     Object signal = this.brokerController.getTransactionStateSignal();
                     synchronized (signal) {
-                        signal.wait();
+                        signal.wait(100L);
                     }
                 }
 
@@ -835,6 +835,7 @@ public class RopServerCnx extends ChannelInboundHandlerAdapter implements Pulsar
         if (entries.isEmpty()) {
             return false;
         }
+        boolean ret = false;
         for (Entry entry : entries) {
             MessageMetadata messageMetadata = peekMessageMetadata(entry.getDataBuffer());
             String persistentState = ROP_TRANSACTION_STATE_COMMIT;
@@ -856,19 +857,26 @@ public class RopServerCnx extends ChannelInboundHandlerAdapter implements Pulsar
 
             TransactionState realState = this.brokerController.getTransactionState(msgId);
             if (realState == null) {
-                if (persistentState.equals(ROP_TRANSACTION_STATE_UNKNOW)) {
-                    // Todo: send check msg to client
-                    this.brokerController.setTransactionState(msgId, ROP_TRANSACTION_STATE_UNKNOW);
-                    return true;
+                if (persistentState.equals(ROP_TRANSACTION_STATE_UNKNOWN)) {
+                    log.info("rollback unknown message , msgId: [{}]", msgId);
+                    this.brokerController.registerTransactionState(msgId, ROP_TRANSACTION_STATE_ROLLBACK);
+                    return false;
                 }
             } else {
-                if (realState.getState().equals(ROP_TRANSACTION_STATE_UNKNOW)) {
+                if (realState.getState().equals(ROP_TRANSACTION_STATE_UNKNOWN)) {
                     log.info("RoP pulsar entry has hasHalfStateMessage , msgId: [{}]", msgId);
-                    return true;
+                    if ( realState.incrementAndGetAccessCount() > 3 ) {
+                        // check three times then drop this msg
+                        log.info("RoP hasHalfStateMessage has checked 3 times, rollback this msg,msgId: [{}]", msgId);
+                        this.brokerController.registerTransactionState(msgId, ROP_TRANSACTION_STATE_ROLLBACK);
+                    } else {
+                        this.brokerController.getTransactionalMessageCheckListener().resolveHalfMsg(realState.getMsgExt());
+                        ret = true;
+                    }
                 }
             }
         }
-        return false;
+        return ret;
     }
 
     private static MessageMetadata peekMessageMetadata(ByteBuf metadataAndPayload) {

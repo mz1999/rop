@@ -116,10 +116,10 @@ public class EndTransactionProcessor implements NettyRequestProcessor {
         }
         OperationResult result = new OperationResult();
         if (MessageSysFlag.TRANSACTION_COMMIT_TYPE == requestHeader.getCommitOrRollback()) {
-            this.brokerController.setTransactionState(requestHeader.getMsgId(), CommonUtils.ROP_TRANSACTION_STATE_COMMIT);
+            this.brokerController.registerTransactionState(requestHeader.getMsgId(), CommonUtils.ROP_TRANSACTION_STATE_COMMIT);
             result.setResponseCode(ResponseCode.SUCCESS);
         } else if (MessageSysFlag.TRANSACTION_ROLLBACK_TYPE == requestHeader.getCommitOrRollback()) {
-            this.brokerController.setTransactionState(requestHeader.getMsgId(), CommonUtils.ROP_TRANSACTION_STATE_ROLLBACK);
+            this.brokerController.registerTransactionState(requestHeader.getMsgId(), CommonUtils.ROP_TRANSACTION_STATE_ROLLBACK);
             result.setResponseCode(ResponseCode.SUCCESS);
         }
         response.setCode(result.getResponseCode());

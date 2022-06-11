@@ -18,8 +18,10 @@ import com.alibaba.fastjson.JSON;
 import com.google.common.cache.Cache;
 import com.google.common.cache.CacheBuilder;
 
+import java.util.HashSet;
 import java.util.List;
-import java.util.Objects;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -28,6 +30,7 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
 
 import lombok.Data;
@@ -46,15 +49,21 @@ import org.apache.rocketmq.acl.common.AclException;
 import org.apache.rocketmq.acl.common.SessionCredentials;
 import org.apache.rocketmq.broker.client.ConsumerIdsChangeListener;
 import org.apache.rocketmq.broker.latency.BrokerFixedThreadPoolExecutor;
+import org.apache.rocketmq.broker.transaction.queue.TransactionalMessageUtil;
 import org.apache.rocketmq.broker.util.ServiceProvider;
 import org.apache.rocketmq.common.ThreadFactoryImpl;
 import org.apache.rocketmq.common.UtilAll;
+import org.apache.rocketmq.common.message.MessageAccessor;
+import org.apache.rocketmq.common.message.MessageConst;
+import org.apache.rocketmq.common.message.MessageDecoder;
 import org.apache.rocketmq.common.protocol.RequestCode;
 import org.apache.rocketmq.common.protocol.header.PullMessageRequestHeader;
 import org.apache.rocketmq.common.protocol.header.SendMessageRequestHeader;
+import org.apache.rocketmq.common.sysflag.MessageSysFlag;
 import org.apache.rocketmq.remoting.RPCHook;
 import org.apache.rocketmq.remoting.protocol.RemotingCommand;
 import org.apache.rocketmq.store.MessageArrivingListener;
+import org.apache.rocketmq.store.MessageExtBrokerInner;
 import org.apache.rocketmq.store.stats.BrokerStats;
 import org.apache.rocketmq.store.stats.BrokerStatsManager;
 import org.streamnative.pulsar.handlers.rocketmq.RocketMQProtocolHandler;
@@ -75,6 +84,7 @@ import org.streamnative.pulsar.handlers.rocketmq.inner.producer.ProducerManager;
 import org.streamnative.pulsar.handlers.rocketmq.inner.proxy.RopBrokerProxy;
 import org.streamnative.pulsar.handlers.rocketmq.utils.MessageIdUtils;
 
+import static org.apache.rocketmq.common.message.MessageConst.PROPERTY_UNIQ_CLIENT_MESSAGE_ID_KEYIDX;
 import static org.streamnative.pulsar.handlers.rocketmq.utils.CommonUtils.*;
 
 /**
@@ -516,6 +526,7 @@ public class RocketMQBrokerController {
         }
         this.transactionalMessageCheckListener.setBrokerController(this);
         this.transactionalMessageCheckService = new TransactionalMessageCheckService(this);
+        this.transactionalMessageCheckService.start();
     }
 
     public void registerProcessor() {
@@ -687,17 +698,36 @@ public class RocketMQBrokerController {
         return this.ropBrokerProxy.getMqTopicManager();
     }
 
-    public void setTransactionState(String msgId, String state) {
-        TransactionState ts = new TransactionState(state);
-        transactionStore.put(msgId, ts);
-        if (state.equals(ROP_TRANSACTION_STATE_COMMIT) || state.equals(ROP_TRANSACTION_STATE_ROLLBACK)) {
+    public void registerTransactionState(String msgId, String state) {
+        if (state.equals(ROP_TRANSACTION_STATE_UNKNOWN)) {
+            return;
+        }
+        TransactionState realState = new TransactionState(state);
+        registerTransactionState(msgId, realState);
+    }
+
+    public void registerTransactionState(MessageExtBrokerInner msgExt, String state) {
+        String msgId = msgExt.getProperties().get(PROPERTY_UNIQ_CLIENT_MESSAGE_ID_KEYIDX);
+        TransactionState realState = new TransactionState(state, msgExt);
+        registerTransactionState(msgId, realState);
+    }
+
+    private void registerTransactionState(String msgId, TransactionState realState) {
+        transactionStore.put(msgId, realState);
+        if (realState.getState().equals(ROP_TRANSACTION_STATE_COMMIT)
+                || realState.getState().equals(ROP_TRANSACTION_STATE_ROLLBACK)) {
             synchronized (transactionStateSignal) {
                 transactionStateSignal.notifyAll();
             }
         }
     }
+
     public TransactionState getTransactionState(String msgId) {
         return transactionStore.get(msgId);
+    }
+
+    public ConcurrentHashMap<String, TransactionState> getTransactionStore() {
+        return this.transactionStore;
     }
 
     public void cleanTransactionState(String msgId) {
@@ -708,42 +738,51 @@ public class RocketMQBrokerController {
         return transactionStateSignal;
     }
 
+    public void checkHalfMessage() {
+        log.info("RoP check HalfMessage");
+        Set<String> rollback = new HashSet<>();
+        for (Map.Entry<String, TransactionState> entry : this.transactionStore.entrySet()) {
+            String key = entry.getKey();
+            TransactionState realState = entry.getValue();
+            if (!realState.getState().equals(ROP_TRANSACTION_STATE_UNKNOWN)) {
+                continue;
+            }
+            if (realState.incrementAndGetAccessCount() > 3) {
+                // check three times then drop the msg
+                log.info("RoP hasHalfStateMessage has checked 3 times, rollback this msg,msgId: [{}]", key);
+                rollback.add(key);
+            } else {
+                this.getTransactionalMessageCheckListener().resolveHalfMsg(realState.getMsgExt());
+            }
+            for (String msgId : rollback) {
+                this.registerTransactionState(msgId, ROP_TRANSACTION_STATE_ROLLBACK);
+            }
+        }
+    }
+
     public static class TransactionState {
         private String state;
-        private long lastAccessTime;
+        private AtomicInteger accessCount;
+        private MessageExtBrokerInner msgExt;
 
         public TransactionState(String state) {
+            this(state, null);
+        }
+        public TransactionState(String state, MessageExtBrokerInner msgExt) {
             this.state = state;
-            this.lastAccessTime = System.currentTimeMillis();
+            this.msgExt = msgExt;
+            this.accessCount = new AtomicInteger(0);
         }
 
         public String getState() {
             return state;
         }
-
-        public long getLastAccessTime() {
-            return lastAccessTime;
+        public MessageExtBrokerInner getMsgExt() {
+            return msgExt;
         }
 
-        public void setLastAccessTime(long lastAccessTime) {
-            this.lastAccessTime = lastAccessTime;
-        }
-
-        @Override
-        public boolean equals(Object o) {
-            if (this == o) {
-                return true;
-            }
-            if (o == null || getClass() != o.getClass()) {
-                return false;
-            }
-            TransactionState that = (TransactionState) o;
-            return lastAccessTime == that.lastAccessTime && Objects.equals(state, that.state);
-        }
-
-        @Override
-        public int hashCode() {
-            return Objects.hash(state, lastAccessTime);
+        public int incrementAndGetAccessCount() {
+            return this.accessCount.incrementAndGet();
         }
     }
 }

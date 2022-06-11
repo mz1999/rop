@@ -14,7 +14,6 @@
 
 package org.streamnative.pulsar.handlers.rocketmq.inner.processor;
 
-import static org.apache.rocketmq.common.message.MessageConst.*;
 import static org.streamnative.pulsar.handlers.rocketmq.utils.CommonUtils.ROP_INNER_CLIENT_ADDRESS;
 import static org.streamnative.pulsar.handlers.rocketmq.utils.CommonUtils.ROP_INNER_MESSAGE_ID;
 import static org.streamnative.pulsar.handlers.rocketmq.utils.CommonUtils.ROP_OWNER_COST_TIME;
@@ -34,7 +33,6 @@ import org.apache.pulsar.common.util.SimpleTextOutputStream;
 import org.apache.rocketmq.broker.mqtrace.ConsumeMessageContext;
 import org.apache.rocketmq.broker.mqtrace.ConsumeMessageHook;
 import org.apache.rocketmq.broker.mqtrace.SendMessageContext;
-import org.apache.rocketmq.client.producer.LocalTransactionState;
 import org.apache.rocketmq.common.MQVersion;
 import org.apache.rocketmq.common.MixAll;
 import org.apache.rocketmq.common.TopicConfig;
@@ -409,8 +407,7 @@ public class SendMessageProcessor extends AbstractSendMessageProcessor implement
         if (Boolean.parseBoolean(traFlag)
                 && !(msgInner.getReconsumeTimes() > 0
                 && msgInner.getDelayTimeLevel() > 0)) { //For client under version 4.6.1
-            String msgId = msgInner.getProperties().get(PROPERTY_UNIQ_CLIENT_MESSAGE_ID_KEYIDX);
-            this.brokerController.setTransactionState(msgId, CommonUtils.ROP_TRANSACTION_STATE_UNKNOW);
+            this.brokerController.registerTransactionState(msgInner, CommonUtils.ROP_TRANSACTION_STATE_UNKNOWN);
         }
         try {
             if (traceContext != null) {

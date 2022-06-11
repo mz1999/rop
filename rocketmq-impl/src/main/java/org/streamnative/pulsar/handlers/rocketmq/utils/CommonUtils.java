@@ -70,7 +70,7 @@ public class CommonUtils {
 
     public static final String ROP_TRANSACTION_STATE_TAG = "r_t_s";
 
-    public static final String ROP_TRANSACTION_STATE_UNKNOW = "0";
+    public static final String ROP_TRANSACTION_STATE_UNKNOWN = "0";
 
     public static final String ROP_TRANSACTION_STATE_COMMIT = "1";
 
