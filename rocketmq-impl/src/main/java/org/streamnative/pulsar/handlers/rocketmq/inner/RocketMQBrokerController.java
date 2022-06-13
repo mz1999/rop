@@ -726,10 +726,6 @@ public class RocketMQBrokerController {
         return transactionStore.get(msgId);
     }
 
-    public ConcurrentHashMap<String, TransactionState> getTransactionStore() {
-        return this.transactionStore;
-    }
-
     public void cleanTransactionState(String msgId) {
         transactionStore.remove(msgId);
     }
@@ -739,24 +735,40 @@ public class RocketMQBrokerController {
     }
 
     public void checkHalfMessage() {
-        log.info("RoP check HalfMessage");
+        log.info("RoP check HalfMessage...");
         Set<String> rollback = new HashSet<>();
+        Set<String> removed = new HashSet<>();
         for (Map.Entry<String, TransactionState> entry : this.transactionStore.entrySet()) {
             String key = entry.getKey();
             TransactionState realState = entry.getValue();
+
+            // last access time > 30 minutes, remove from transactionStore
+            if ((System.currentTimeMillis() - realState.getLastAccessTime()) > 30 * 60 * 1000) {
+                removed.add(key);
+                continue;
+            }
+
             if (!realState.getState().equals(ROP_TRANSACTION_STATE_UNKNOWN)) {
                 continue;
             }
+
+            // check three times then rollback the msg
             if (realState.incrementAndGetAccessCount() > 3) {
-                // check three times then drop the msg
                 log.info("RoP hasHalfStateMessage has checked 3 times, rollback this msg,msgId: [{}]", key);
                 rollback.add(key);
             } else {
+                // send check message to client
                 this.getTransactionalMessageCheckListener().resolveHalfMsg(realState.getMsgExt());
             }
-            for (String msgId : rollback) {
-                this.registerTransactionState(msgId, ROP_TRANSACTION_STATE_ROLLBACK);
-            }
+        }
+
+        // remove timeout message
+        for (String msgId : removed) {
+            this.transactionStore.remove(msgId);
+        }
+        // roll back the message
+        for (String msgId : rollback) {
+            this.registerTransactionState(msgId, ROP_TRANSACTION_STATE_ROLLBACK);
         }
     }
 
@@ -765,6 +777,8 @@ public class RocketMQBrokerController {
         private AtomicInteger accessCount;
         private MessageExtBrokerInner msgExt;
 
+        private long lastAccessTime;
+
         public TransactionState(String state) {
             this(state, null);
         }
@@ -772,6 +786,7 @@ public class RocketMQBrokerController {
             this.state = state;
             this.msgExt = msgExt;
             this.accessCount = new AtomicInteger(0);
+            this.lastAccessTime = System.currentTimeMillis();
         }
 
         public String getState() {
@@ -783,6 +798,10 @@ public class RocketMQBrokerController {
 
         public int incrementAndGetAccessCount() {
             return this.accessCount.incrementAndGet();
+        }
+
+        public long getLastAccessTime() {
+            return lastAccessTime;
         }
     }
 }

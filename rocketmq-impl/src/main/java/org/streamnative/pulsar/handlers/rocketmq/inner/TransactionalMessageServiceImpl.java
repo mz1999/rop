@@ -34,8 +34,6 @@ import org.apache.rocketmq.store.PutMessageResult;
 import org.apache.rocketmq.store.PutMessageStatus;
 import org.streamnative.pulsar.handlers.rocketmq.inner.listener.AbstractTransactionalMessageCheckListener;
 
-import static org.streamnative.pulsar.handlers.rocketmq.utils.CommonUtils.ROP_TRANSACTION_STATE_ROLLBACK;
-import static org.streamnative.pulsar.handlers.rocketmq.utils.CommonUtils.ROP_TRANSACTION_STATE_UNKNOWN;
 
 /**
  * Transactional message service impl.
